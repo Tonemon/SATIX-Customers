@@ -49,23 +49,40 @@ def allocate_ips(network_cidr, count: int, small_net_for_vms: bool = False):
     """
     Allocates IP addresses from the given network CIDR. If `small_net_for_vms` is True,
     it will attempt to find a small /30 subnet within the network and allocate from that.
+    Uses efficient math-based IP selection instead of materializing all hosts.
     """
 
     net = ipaddress.ip_network(network_cidr)
-    hosts = list(net.hosts())
+    first_host = net.network_address + 1
+    last_host = net.broadcast_address - 1
+    num_hosts = net.num_addresses - 2  # exclude network and broadcast
+    
     if small_net_for_vms:
-        # choose a small /30 subnetwork chunk for VMs
-        # find a /30 within network
-        for prefix in range(30, net.max_prefixlen + 1):
-            try:
-                subnets = list(net.subnets(new_prefix=30))
-                if subnets:
-                    chosen = subnets[0]
-                    return [str(ip) for ip in chosen.hosts()][:count]
-            except Exception:
-                break
-    # default: random unique hosts
-    return [str(h) for h in random.sample(hosts, count)]
+        # For /30, there are only 2 usable hosts, so just return those
+        if net.prefixlen >= 30:
+            return [str(first_host), str(first_host + 1)]
+        # Otherwise, try using first /30 subnet
+        try:
+            subnet = net.subnets(new_prefix=30).__next__()
+            hosts = list(subnet.hosts())
+            return [str(h) for h in hosts][:count]
+        except StopIteration:
+            pass
+    
+    # default: select IPs mathematically without materializing entire list
+    if count > num_hosts:
+        count = num_hosts
+    
+    ips = []
+    if count <= 0:
+        return ips
+    
+    # Use random offsets within the range instead of sampling from materialized list
+    offsets = set()
+    while len(offsets) < count and len(offsets) < num_hosts:
+        offsets.add(random.randint(0, num_hosts - 1))
+    
+    return [str(first_host + offset) for offset in sorted(offsets)]
 
 
 def build_instances(args, vm_subnet_prefix: int = 24):
@@ -97,11 +114,36 @@ def build_instances(args, vm_subnet_prefix: int = 24):
     # Allocate IPs per hypervisor network and build instances
     idx = 1
     hv_instances = {hv: [] for hv in hypervisors}
+
+    # track globally used ips and subnets to avoid duplicates
+    global_used_ips = set()
+    global_used_subnets = set()
     for hv in hypervisors:
         net_cidr = hv_map[hv]
         count = hv_counts[hv]
+        ips = []
         try:
-            ips = allocate_ips(net_cidr, count)
+            hv_net = ipaddress.ip_network(net_cidr)
+            first_host = hv_net.network_address + 1
+            last_host = hv_net.broadcast_address - 1
+            num_hosts = hv_net.num_addresses - 2
+            
+            # Efficiently select random IPs without materializing entire list
+            if count > num_hosts:
+                count = num_hosts
+            
+            attempts = 0
+            max_attempts = count * 10  # allow some retries for collision avoidance
+            while len(ips) < count and attempts < max_attempts:
+                offset = random.randint(0, num_hosts - 1)
+                candidate_ip = first_host + offset
+                s = str(candidate_ip)
+                
+                if s not in global_used_ips and not any(candidate_ip in ipaddress.ip_network(r) for r in global_used_subnets):
+                    ips.append(s)
+                    global_used_ips.add(s)
+                attempts += 1
+
         except Exception as e:
             if args.verbose:
                 print(f"Failed to allocate IPs for {net_cidr}: {e}")
@@ -109,6 +151,8 @@ def build_instances(args, vm_subnet_prefix: int = 24):
 
         if args.verbose:
             print(f"\nAllocated {len(ips)} IPs for {hv} from range {net_cidr}.")
+
+
         # Determine how many VMs (Ubuntu 20.04) are allowed on this hypervisor
         pct = max(0, min(100, getattr(args, "subnetworks_percentage", 20)))
         max_vms = int(count * pct / 100)
@@ -121,11 +165,94 @@ def build_instances(args, vm_subnet_prefix: int = 24):
         if max_vms > 0 and indices:
             vm_indices = set(random.sample(indices, min(max_vms, len(indices))))
 
+        # Keep a local pool of remaining hv hosts for resolving conflicts (if needed)
+        # Use math-based approach instead of materializing all hosts
+        hv_net = ipaddress.ip_network(net_cidr)
+        hv_pool = []
+        try:
+            first_host = hv_net.network_address + 1
+            num_hosts = hv_net.num_addresses - 2
+            # Sample some candidate IPs from the range without materializing all
+            for _ in range(min(1000, num_hosts)):
+                offset = random.randint(0, num_hosts - 1)
+                candidate = first_host + offset
+                s = str(candidate)
+                if s not in global_used_ips:
+                    hv_pool.append(s)
+            random.shuffle(hv_pool)
+        except Exception:
+            hv_pool = []
+
         for pos, ip in enumerate(ips):
             is_vm = pos in vm_indices
+            services = []
             if is_vm:
+                # Compute subnet derived from this ip
+                try:
+                    net = ipaddress.ip_network(f"{ip}/{vm_subnet_prefix}", strict=False)
+                    net_s = str(net)
+                except Exception:
+                    net = None
+                    net_s = None
+
+                # If this subnet already used, try to find another ip from hv_pool that yields a free subnet
+                if net_s and net_s in global_used_subnets:
+                    found = False
+                    while hv_pool and not found:
+                        cand = hv_pool.pop()
+                        try:
+                            cand_net = ipaddress.ip_network(f"{cand}/{vm_subnet_prefix}", strict=False)
+                            if str(cand_net) not in global_used_subnets and cand not in global_used_ips:
+                                # use cand
+                                ip = cand
+                                net = cand_net
+                                net_s = str(cand_net)
+                                global_used_ips.add(ip)
+                                found = True
+                                break
+                        except Exception:
+                            continue
+
+                    if not found:
+                        # fallback: try to pick a free subnet mathematically
+                        # instead of enumerating all subnets (which is slow for large networks)
+                        try:
+                            first_host = hv_net.network_address + 1
+                            num_hosts = hv_net.num_addresses - 2
+                            # compute how many /24 subnets fit in the network
+                            subnet_size = 2 ** (32 - vm_subnet_prefix)
+                            max_subnets = num_hosts // subnet_size
+                            
+                            # try random subnets until we find a free one
+                            for _ in range(min(100, max_subnets)):
+                                subnet_idx = random.randint(0, max_subnets - 1)
+                                candidate_net = ipaddress.ip_network(
+                                    (hv_net.network_address + subnet_idx * subnet_size, vm_subnet_prefix),
+                                    strict=False
+                                )
+                                if str(candidate_net) not in global_used_subnets:
+                                    net = candidate_net
+                                    net_s = str(candidate_net)
+                                    hosts = list(net.hosts())
+                                    if hosts:
+                                        ip = str(hosts[0])
+                                        global_used_ips.add(ip)
+                                    break
+                        except Exception:
+                            pass
+
+                # finally assign and record
+                if net_s:
+                    global_used_subnets.add(net_s)
+                    # set ip to first usable host in net
+                    try:
+                        hosts = list(net.hosts())
+                        if hosts:
+                            ip = str(hosts[0])
+                            global_used_ips.add(ip)
+                    except Exception:
+                        pass
                 distro = "20.04"
-                services = []
             else:
                 # pick between 22.04 and 24.04 (preserve relative weights)
                 distro = random.choices(["22.04", "24.04"], weights=[0.45, 0.3])[0]
@@ -149,32 +276,23 @@ def build_instances(args, vm_subnet_prefix: int = 24):
     if args.verbose:
         print("\n")
 
-    # For 20.04 VMs: ensure they each get a subnet allocation (e.g. /24)
-    # We'll allocate sequential subnets from the provided network using the
-    # `vm_subnet_prefix` parameter. If there are fewer subnets than VMs,
-    # cycle through the available subnets.
-    # Assign VM subnets per hypervisor: split each hypervisor network into
-    # subnets of size `vm_subnet_prefix` and assign one per VM (cycle if needed).
+    # For 20.04 VMs: compute subnet from the generated IP using the provided
+    # `vm_subnet_prefix`. Then set the VM's IP to the first usable host IP
+    # in that subnet and store the subnet network address as `vm_subnet`.
     try:
-        for hv, net_cidr in hv_map.items():
-            try:
-                net = ipaddress.ip_network(net_cidr)
-                subnets = list(net.subnets(new_prefix=vm_subnet_prefix))
-            except Exception as e:
-                if args.verbose:
-                    print(f"Failed to compute subnets for {net_cidr}: {e}")
-                subnets = []
-
-            vm_list = [i for i in hv_instances.get(hv, []) if i.get("is_vm")]
-            if not subnets:
-                if args.verbose and vm_list:
-                    print(f"No subnets available for hypervisor {hv} ({net_cidr}), skipping vm_subnet assignment")
-                continue
-            nsub = len(subnets)
-            for i, inst in enumerate(vm_list):
-                inst["vm_subnet"] = str(subnets[i % nsub])
-            if args.verbose:
-                print(f"Assigned {len(vm_list)} VM subnets for {hv} using /{vm_subnet_prefix} subnets (available IPs for that subnet: {nsub})")
+        for inst in instances:
+            if inst.get("is_vm"):
+                try:
+                    net = ipaddress.ip_network(f"{inst['ip']}/{vm_subnet_prefix}", strict=False)
+                    hosts = list(net.hosts())
+                    if hosts:
+                        inst["vm_subnet"] = str(net)
+                        inst["ip"] = str(hosts[0])
+                        if args.verbose:
+                            print(f"VM {inst['name']}: computed subnet {inst['vm_subnet']} and set IP {inst['ip']}")
+                except Exception as e:
+                    if args.verbose:
+                        print(f"Failed to compute vm subnet for {inst['name']} ({inst.get('ip')}): {e}")
     except Exception:
         pass
 
