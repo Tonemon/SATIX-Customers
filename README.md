@@ -13,9 +13,20 @@ This repository scaffolds a university-level simulation of an Internet Exchange 
 
 ## Usage
 
+
+1. You can use `scripts/generate_instances.py` to produce `instances.json`, `ansible/inventory/hosts.yml`, and `ansible/host_vars/*.yml`:
 ```bash
-python3 scripts/generate_instances.py --network 5.0.0.0/8 --hypervisors hv1 --min-per-hv 8 --max-per-hv 10
+python3 scripts/generate_instances.py -h
+python3 scripts/generate_instances.py --network 5.0.0.0/8 --hypervisors hv1
 ```
+
+2. Then inspect `terraform/instances.json` (copied from root `instances.json`) and customize `terraform/terraform.tfvars` (Proxmox credentials and storage/node mapping).
+3. Run `terraform init` and `terraform apply` in `terraform/` to create containers/VMs (requires Proxmox provider and credentials).
+4. Run `ansible-playbook -i ansible/inventory/hosts.yml ansible/site.yml` to configure services.
+
+Notes
+- The Terraform Proxmox provider configuration is left as placeholders: fill in endpoint, user, and password or token.
+- The Python generator implements the randomization and prepares Ansible inventory and `host_vars` so Ansible can perform deterministic configuration.
 
 
 ## Sources
