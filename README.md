@@ -1,4 +1,4 @@
-# SAT-IX-Customers Simulation
+# SATIX Customers Simulation
 
 > Suit-and-Tie (SAT) Internet eXchange (IX) customers simulation.
 

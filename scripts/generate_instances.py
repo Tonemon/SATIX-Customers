@@ -105,10 +105,9 @@ def build_instances(args, vm_subnet_prefix: int = 24):
     # Decide counts per hypervisor
     hv_counts = {hv: random.randint(args.min_per_hv, args.max_per_hv) for hv in hypervisors}
 
-    if args.verbose:
-        print("\n Using the following Hypervisor -> Network mapping:")
-        for hv, net in hv_map.items():
-            print(f"    {hv}: {net}     (will create {hv_counts[hv]} hosts)")
+    print("\nUsing the following Hypervisor -> Network mapping:")
+    for hv, net in hv_map.items():
+        print(f"  {hv}: {net}     (will create {hv_counts[hv]} hosts)")
 
 
     # Allocate IPs per hypervisor network and build instances
@@ -149,15 +148,13 @@ def build_instances(args, vm_subnet_prefix: int = 24):
                 print(f"Failed to allocate IPs for {net_cidr}: {e}")
             ips = []
 
-        if args.verbose:
-            print(f"\nAllocated {len(ips)} IPs for {hv} from range {net_cidr}.")
+        print(f"\nAllocated {len(ips)} random IPs for {hv} from range {net_cidr}.")
 
 
         # Determine how many VMs (Ubuntu 20.04) are allowed on this hypervisor
         pct = max(0, min(100, getattr(args, "subnetworks_percentage", 20)))
         max_vms = int(count * pct / 100)
-        if args.verbose:
-            print(f"  Hypervisor {hv}: allowed maximum VMs (20.04) = {max_vms} of {count} hosts ({pct}%)")
+        print(f"  Hypervisor {hv}: {max_vms} of {count} hosts ({pct}%) will be VMs with their own subnets.")
 
         # Choose which indices will be VMs
         indices = list(range(len(ips)))
@@ -233,10 +230,6 @@ def build_instances(args, vm_subnet_prefix: int = 24):
                                 if str(candidate_net) not in global_used_subnets:
                                     net = candidate_net
                                     net_s = str(candidate_net)
-                                    hosts = list(net.hosts())
-                                    if hosts:
-                                        ip = str(hosts[0])
-                                        global_used_ips.add(ip)
                                     break
                         except Exception:
                             pass
@@ -244,14 +237,7 @@ def build_instances(args, vm_subnet_prefix: int = 24):
                 # finally assign and record
                 if net_s:
                     global_used_subnets.add(net_s)
-                    # set ip to first usable host in net
-                    try:
-                        hosts = list(net.hosts())
-                        if hosts:
-                            ip = str(hosts[0])
-                            global_used_ips.add(ip)
-                    except Exception:
-                        pass
+                    global_used_ips.add(ip)
                 distro = "20.04"
             else:
                 # pick between 22.04 and 24.04 (preserve relative weights)
@@ -273,31 +259,25 @@ def build_instances(args, vm_subnet_prefix: int = 24):
             hv_instances[hv].append(inst)
             idx += 1
 
-    if args.verbose:
-        print("\n")
 
-    # For 20.04 VMs: compute subnet from the generated IP using the provided
-    # `vm_subnet_prefix`. Then set the VM's IP to the first usable host IP
-    # in that subnet and store the subnet network address as `vm_subnet`.
+    # For 20.04 VMs: compute and store the subnet network address as `vm_subnet`.
+    # The VM's IP is kept as randomly selected within that subnet range.
+    print("\nComputing VM subnets for Ubuntu 20.04 hosts:")
+
     try:
         for inst in instances:
             if inst.get("is_vm"):
                 try:
                     net = ipaddress.ip_network(f"{inst['ip']}/{vm_subnet_prefix}", strict=False)
-                    hosts = list(net.hosts())
-                    if hosts:
-                        inst["vm_subnet"] = str(net)
-                        inst["ip"] = str(hosts[0])
-                        if args.verbose:
-                            print(f"VM {inst['name']}: computed subnet {inst['vm_subnet']} and set IP {inst['ip']}")
+                    inst["vm_subnet"] = str(net)
+                    print(f"  VM {inst['name']}: computed subnet {inst['vm_subnet']}, IP {inst['ip']}")
+
                 except Exception as e:
                     if args.verbose:
-                        print(f"Failed to compute vm subnet for {inst['name']} ({inst.get('ip')}): {e}")
+                        print(f"  Failed to compute vm subnet for {inst['name']} ({inst.get('ip')}): {e}")
+
     except Exception:
         pass
-
-    if args.verbose:
-        print("\n")
 
     return instances
 
@@ -314,6 +294,7 @@ def write_outputs(instances):
 
     # prepare Ansible inventory and host_vars
     ansible_inv_dir = root / "ansible" / "inventory"
+    ansible_inv_file = ansible_inv_dir / "hosts.yml"
     host_vars_dir = root / "ansible" / "host_vars"
     ansible_inv_dir.mkdir(parents=True, exist_ok=True)
     host_vars_dir.mkdir(parents=True, exist_ok=True)
@@ -341,10 +322,13 @@ def write_outputs(instances):
     # write hosts.yml
     import yaml
 
-    with open(ansible_inv_dir / "hosts.yml", "w") as f:
+    with open(ansible_inv_file, "w") as f:
         yaml.safe_dump(hosts_yml, f)
 
-    print(f"Wrote '{out_json}' and Ansible inventory to '{ansible_inv_dir}'.\n")
+    print(f"\n\nGeneration finished. Wrote the:")
+    print(f"  - Overall network to '{out_json}'.")
+    print(f"  - Ansible inventory to '{ansible_inv_file}'.")
+    print(f"  - Host variables to '{host_vars_dir}/' (one file per host).\n")
 
 
 def validate_networks(networks):
