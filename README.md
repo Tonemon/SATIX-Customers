@@ -37,7 +37,12 @@ These are the (minimal) requirements for this project:
 
 ```bash
 python3 scripts/generate_instances.py -h
-python3 scripts/generate_instances.py --network 5.0.0.0/8 --hypervisors hv1
+
+# Single hypervisor
+python3 scripts/generate_instances.py --hypervisors hv1.lan --network 5.0.0.0/8 -v
+
+# Multiple hypervisors
+python3 scripts/generate_instances.py --hypervisors hv1.lan hv2.lan --network 5.0.0.0/8 6.0.0.0/8 -v
 ```
 
 2. Then inspect `terraform/instances.json` (copied from root `instances.json`) and customize `terraform/terraform.tfvars` (Proxmox credentials and storage/node mapping).

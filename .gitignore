@@ -1,0 +1,10 @@
+
+# Ansible
+ansible/host_vars/ix-host-*.yml
+ansible/inventory/hosts.yml
+
+# Terraform
+
+
+# Other
+instances.json
