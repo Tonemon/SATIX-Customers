@@ -40,9 +40,19 @@ TOP20_SERVICES = [
     "chrony",
 ]
 
-def random_services(min_services=3, max_services=8, seed=None):
-    n = random.randint(min_services, max_services)
-    return random.sample(TOP20_SERVICES, n)
+def random_services(min_services=3, max_services=8, exclude_services=None, seed=None):
+    """
+    Selects random services from TOP20_SERVICES, excluding those in exclude_services.
+    """
+    exclude_services = exclude_services or []
+    available_services = [s for s in TOP20_SERVICES if s not in exclude_services]
+    
+    if len(available_services) < min_services:
+        # If not enough services available, use what we have
+        return available_services
+    
+    n = random.randint(min_services, min(max_services, len(available_services)))
+    return random.sample(available_services, n)
 
 
 def allocate_ips(network_cidr, count: int, small_net_for_vms: bool = False):
@@ -85,10 +95,11 @@ def allocate_ips(network_cidr, count: int, small_net_for_vms: bool = False):
     return [str(first_host + offset) for offset in sorted(offsets)]
 
 
-def build_instances(args, vm_subnet_prefix: int = 24):
+def build_instances(args, vm_subnet_prefix: int = 24, exclude_services=None):
     """
     Generates a list of instance dicts with randomized properties based on the provided arguments.
     """
+    exclude_services = exclude_services or []
 
     random.seed(args.seed)
     instances = []
@@ -174,6 +185,7 @@ def build_instances(args, vm_subnet_prefix: int = 24):
         if args.verbose:
             print(f"  Hypervisor {hv}: {len(multi_ip_indices)} of {count} hosts ({multi_ip_pct}%) will have multiple IPs.")
 
+
         # Keep a local pool of remaining hv hosts for resolving conflicts (if needed)
         # Use math-based approach instead of materializing all hosts
         hv_net = ipaddress.ip_network(net_cidr)
@@ -193,7 +205,7 @@ def build_instances(args, vm_subnet_prefix: int = 24):
             hv_pool = []
 
         for pos, ip in enumerate(ips):
-            is_vm = pos in vm_indices
+            is_vnetmgr = pos in vm_indices
             has_multi_ip = pos in multi_ip_indices
             services = []
             primary_ip = ip
@@ -229,7 +241,7 @@ def build_instances(args, vm_subnet_prefix: int = 24):
                     except Exception:
                         pass
             
-            if is_vm:
+            if is_vnetmgr:
                 # Compute subnet derived from this ip
                 try:
                     net = ipaddress.ip_network(f"{ip}/{vm_subnet_prefix}", strict=False)
@@ -288,7 +300,7 @@ def build_instances(args, vm_subnet_prefix: int = 24):
             else:
                 # pick between 22.04 and 24.04 (preserve relative weights)
                 distro = random.choices(["22.04", "24.04"], weights=[0.45, 0.3])[0]
-                services = random_services()
+                services = random_services(exclude_services=exclude_services)
 
             name = f"ix-host-{idx:03d}"
             # Merge primary IP and additional IPs into a single list
@@ -297,7 +309,7 @@ def build_instances(args, vm_subnet_prefix: int = 24):
                 "name": name,
                 "hypervisor": hv,
                 "distro": distro,
-                "is_vm": is_vm,
+                "is_vm": is_vnetmgr,
                 "ip": all_ips,
                 "ssh_user": "root",
                 "ssh_pubkey": args.ssh_pubkey,
@@ -414,35 +426,78 @@ def validate_hypervisors(hypervisors, networks):
         return [f"hv{i+1}" for i in range(len(networks))]
 
 
+def list_services():
+    """
+    Lists all available services from TOP20_SERVICES.
+    """
+    print("\nAvailable Services (Top 20):")
+    print("-" * 40)
+    for i, service in enumerate(TOP20_SERVICES, 1):
+        print(f"{i:2d}. {service}")
+    print()
+
+
 def parse_args():
     """
-    Parses command-line arguments for the script.
+    Parses command-line arguments for the script using subparsers.
     """
-
-    p = argparse.ArgumentParser()
-    p.add_argument("--hypervisors", nargs="*", default=None, help="List of hypervisor node names. If provided, must match number of networks.")
-    p.add_argument("--network", nargs="*", default=["5.0.0.0/8"], required=True, help="Network CIDR(s) to allocate from. Provide one per hypervisor.")
-    p.add_argument("--min-per-hv", type=int, default=8)
-    p.add_argument("--max-per-hv", type=int, default=12)
-    p.add_argument("--vm-subnet-prefix", type=int, default=24, help="Prefix length for VM subnet allocations (e.g. 24 for /24).")
-    p.add_argument("--subnetworks-percentage", type=int, default=20, help="Percent of hosts per hypervisor that may be Ubuntu 20.04 VMs (0-100).")
-    p.add_argument("--multiple-ip-percentage", type=int, default=40, help="Percent of hosts per hypervisor that has multiple IPs assigned to them.")
-    p.add_argument("--multiple-ip-random", action="store_true", help="If the IPs of hosts with multiple IPs should be random. By default they are incremented.")
-    p.add_argument("--seed", type=int, default=None)
-    p.add_argument("--ssh-pubkey", default="ssh-rsa AAAAB3Nza... user@example", help="Public key to set for all hosts")
-    p.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output for debugging")
-    return p.parse_args()
+    main_parser = argparse.ArgumentParser(
+        description="Generate instances or list available services."
+    )
+    
+    subparsers = main_parser.add_subparsers(dest="command", help="Commands")
+    
+    # 'generate' subcommand
+    generate_parser = subparsers.add_parser("generate", help="Generate instances configuration")
+    generate_parser.add_argument("--hypervisors", nargs="*", default=None, help="List of hypervisor node names. If provided, must match number of networks.")
+    generate_parser.add_argument("--network", nargs="*", default=["5.0.0.0/8"], required=True, help="Network CIDR(s) to allocate from. Provide one per hypervisor.")
+    generate_parser.add_argument("--min-per-hv", type=int, default=8)
+    generate_parser.add_argument("--max-per-hv", type=int, default=12)
+    generate_parser.add_argument("--vm-subnet-prefix", type=int, default=24, help="Prefix length for VM subnet allocations (e.g. 24 for /24).")
+    generate_parser.add_argument("--subnetworks-percentage", type=int, default=20, help="Percent of hosts per hypervisor that may be Ubuntu 20.04 VMs (0-100).")
+    generate_parser.add_argument("--multiple-ip-percentage", type=int, default=40, help="Percent of hosts per hypervisor that has multiple IPs assigned to them.")
+    generate_parser.add_argument("--multiple-ip-random", action="store_true", help="If the IPs of hosts with multiple IPs should be random. By default they are incremented.")
+    generate_parser.add_argument("--exclude-service", nargs="*", default=[], help="Services to exclude from the available services list.")
+    generate_parser.add_argument("--seed", type=int, default=None)
+    generate_parser.add_argument("--ssh-pubkey", default="ssh-rsa AAAAB3Nza... user@example", help="Public key to set for all hosts")
+    generate_parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output for debugging")
+    
+    # 'list' subcommand
+    list_parser = subparsers.add_parser("list", help="List available resources")
+    list_subparsers = list_parser.add_subparsers(dest="list_type", help="What to list")
+    list_subparsers.add_parser("services", help="List available services")
+    
+    args = main_parser.parse_args()
+    
+    # If no command specified, show help
+    if not args.command:
+        main_parser.print_help()
+        sys.exit(0)
+    
+    return args
 
 
 def main():
     args = parse_args()
-
-    # Validate networks and hypervisors
-    args.network = validate_networks(args.network)
-    args.hypervisors = validate_hypervisors(args.hypervisors, args.network)
-
-    instances = build_instances(args, vm_subnet_prefix=args.vm_subnet_prefix)
-    write_outputs(instances)
+    
+    if args.command == "list":
+        if args.list_type == "services":
+            list_services()
+        else:
+            print("Please specify what to list: services")
+            sys.exit(1)
+    
+    elif args.command == "generate":
+        # Validate networks and hypervisors
+        args.network = validate_networks(args.network)
+        args.hypervisors = validate_hypervisors(args.hypervisors, args.network)
+        
+        instances = build_instances(
+            args, 
+            vm_subnet_prefix=args.vm_subnet_prefix,
+            exclude_services=args.exclude_service
+        )
+        write_outputs(instances)
 
 
 if __name__ == "__main__":

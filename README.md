@@ -33,16 +33,36 @@ These are the (minimal) requirements for this project:
 
 
 ## Usage
-1. You can use `scripts/generate_instances.py` to produce `instances.json`, `ansible/inventory/hosts.yml`, and `ansible/host_vars/*.yml`:
+You first use the `scripts/generate_instances.py` to produce `instances.json`, `ansible/inventory/hosts.yml`, and `ansible/host_vars/*.yml`:
 
 ```bash
 python3 scripts/generate_instances.py -h
+python3 scripts/generate_instances.py generate -h
+```
 
-# Single hypervisor
-python3 scripts/generate_instances.py --hypervisors hv1.lan --network 5.0.0.0/8 -v
 
-# Multiple hypervisors
-python3 scripts/generate_instances.py --hypervisors hv1.lan hv2.lan --network 5.0.0.0/8 6.0.0.0/8 -v
+### Single hypervisor
+
+Custom ranges
+```bash
+python3 scripts/generate_instances.py generate --hypervisors hv1.lan --network 5.0.0.0/8 -v
+```
+
+Using a private `10.0.0.0/8` range on one hypervisor:
+```bash
+python3 scripts/generate_instances.py generate --hypervisors hv1.lan --network 10.0.0.0/8 -v
+```
+
+### Multiple hypervisors
+
+Custom ranges
+```bash
+python3 scripts/generate_instances.py generate --hypervisors hv1.lan hv2.lan --network 5.0.0.0/8 6.0.0.0/8 -v
+```
+
+Using one private `10.0.0.0/8` range on multiple hypervisors:
+```bash
+python3 scripts/generate_instances.py generate --hypervisors hv1.lan hv2.lan --network 10.1.0.0/16 10.2.0.0/16 -v
 ```
 
 2. Then inspect `terraform/instances.json` (copied from root `instances.json`) and customize `terraform/terraform.tfvars` (Proxmox credentials and storage/node mapping).
