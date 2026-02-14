@@ -478,6 +478,12 @@ def parse_args():
 
 
 def main():
+    """
+    Main entry point for the script. Parses arguments and executes the appropriate command.
+    """
+    print("\n  ================================================")
+    print("=== SATIX Customer Simulation Instance Generator ===")
+    print("  ================================================\n")
     args = parse_args()
     
     if args.command == "list":
