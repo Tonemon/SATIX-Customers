@@ -162,6 +162,18 @@ def build_instances(args, vm_subnet_prefix: int = 24):
         if max_vms > 0 and indices:
             vm_indices = set(random.sample(indices, min(max_vms, len(indices))))
 
+        # Determine how many hosts will have multiple IPs (exclude VMs)
+        multi_ip_pct = max(0, min(100, getattr(args, "multiple_ip_percentage", 40)))
+        max_multi_ip = int(count * multi_ip_pct / 100)
+        # Select from non-VM indices only
+        non_vm_indices = [i for i in indices if i not in vm_indices]
+        multi_ip_indices = set()
+        if max_multi_ip > 0 and non_vm_indices:
+            multi_ip_indices = set(random.sample(non_vm_indices, min(max_multi_ip, len(non_vm_indices))))
+        
+        if args.verbose:
+            print(f"  Hypervisor {hv}: {len(multi_ip_indices)} of {count} hosts ({multi_ip_pct}%) will have multiple IPs.")
+
         # Keep a local pool of remaining hv hosts for resolving conflicts (if needed)
         # Use math-based approach instead of materializing all hosts
         hv_net = ipaddress.ip_network(net_cidr)
@@ -182,7 +194,41 @@ def build_instances(args, vm_subnet_prefix: int = 24):
 
         for pos, ip in enumerate(ips):
             is_vm = pos in vm_indices
+            has_multi_ip = pos in multi_ip_indices
             services = []
+            primary_ip = ip
+            additional_ips = []
+            
+            # Allocate additional IPs if this host has multiple IPs
+            if has_multi_ip:
+                num_additional = random.randint(1, 4)  # 2-5 total IPs (1 primary + 1-4 additional)
+                
+                if args.multiple_ip_random:
+                    # Random unique /32 addresses from hv_pool
+                    for _ in range(num_additional):
+                        if hv_pool:
+                            additional_ip = hv_pool.pop()
+                            additional_ips.append(additional_ip)
+                            global_used_ips.add(additional_ip)
+                        else:
+                            break
+                else:
+                    # Sequential IPs incremented from the primary IP
+                    try:
+                        current_ip = ipaddress.ip_address(ip)
+                        for offset in range(1, num_additional + 1):
+                            next_ip = current_ip + offset
+                            next_ip_str = str(next_ip)
+                            if next_ip_str not in global_used_ips:
+                                additional_ips.append(next_ip_str)
+                                global_used_ips.add(next_ip_str)
+                            else:
+                                # Try to find a free sequential IP from the pool
+                                if hv_pool:
+                                    additional_ips.append(hv_pool.pop())
+                    except Exception:
+                        pass
+            
             if is_vm:
                 # Compute subnet derived from this ip
                 try:
@@ -245,12 +291,14 @@ def build_instances(args, vm_subnet_prefix: int = 24):
                 services = random_services()
 
             name = f"ix-host-{idx:03d}"
+            # Merge primary IP and additional IPs into a single list
+            all_ips = [ip] + additional_ips
             inst = {
                 "name": name,
                 "hypervisor": hv,
                 "distro": distro,
                 "is_vm": is_vm,
-                "ip": ip,
+                "ip": all_ips,
                 "ssh_user": "root",
                 "ssh_pubkey": args.ssh_pubkey,
                 "services": services,
@@ -268,9 +316,10 @@ def build_instances(args, vm_subnet_prefix: int = 24):
         for inst in instances:
             if inst.get("is_vm"):
                 try:
-                    net = ipaddress.ip_network(f"{inst['ip']}/{vm_subnet_prefix}", strict=False)
+                    primary_ip = inst['ip'][0]  # Use first IP from the list
+                    net = ipaddress.ip_network(f"{primary_ip}/{vm_subnet_prefix}", strict=False)
                     inst["vm_subnet"] = str(net)
-                    print(f"  VM {inst['name']}: computed subnet {inst['vm_subnet']}, IP {inst['ip']}")
+                    print(f"  VM {inst['name']}: computed subnet {inst['vm_subnet']}, IP {primary_ip}")
 
                 except Exception as e:
                     if args.verbose:
@@ -309,7 +358,8 @@ def write_outputs(instances):
     hosts_yml = {"all": {"hosts": {}, "children": {}}}
     # fill hosts
     for inst in instances:
-        hosts_yml["all"]["hosts"][inst["name"]] = {"ansible_host": inst["ip"], "ansible_user": inst["ssh_user"]}
+        primary_ip = inst["ip"][0]  # Use first IP from the list for Ansible host
+        hosts_yml["all"]["hosts"][inst["name"]] = {"ansible_host": primary_ip, "ansible_user": inst["ssh_user"]}
         # write host_vars
         hv = host_vars_dir / f"{inst['name']}.yml"
         with open(hv, "w") as f:
@@ -374,8 +424,10 @@ def parse_args():
     p.add_argument("--network", nargs="*", default=["5.0.0.0/8"], required=True, help="Network CIDR(s) to allocate from. Provide one per hypervisor.")
     p.add_argument("--min-per-hv", type=int, default=8)
     p.add_argument("--max-per-hv", type=int, default=12)
-    p.add_argument("--vm-subnet-prefix", type=int, default=24, help="Prefix length for VM subnet allocations (e.g. 24 for /24)")
-    p.add_argument("--subnetworks-percentage", type=int, default=20, help="Percent of hosts per hypervisor that may be Ubuntu 20.04 VMs (0-100)")
+    p.add_argument("--vm-subnet-prefix", type=int, default=24, help="Prefix length for VM subnet allocations (e.g. 24 for /24).")
+    p.add_argument("--subnetworks-percentage", type=int, default=20, help="Percent of hosts per hypervisor that may be Ubuntu 20.04 VMs (0-100).")
+    p.add_argument("--multiple-ip-percentage", type=int, default=40, help="Percent of hosts per hypervisor that has multiple IPs assigned to them.")
+    p.add_argument("--multiple-ip-random", action="store_true", help="If the IPs of hosts with multiple IPs should be random. By default they are incremented.")
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--ssh-pubkey", default="ssh-rsa AAAAB3Nza... user@example", help="Public key to set for all hosts")
     p.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output for debugging")
