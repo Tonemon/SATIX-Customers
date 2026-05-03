@@ -40,7 +40,7 @@ TOP20_SERVICES = [
     "chrony",
 ]
 
-def random_services(min_services=3, max_services=8, exclude_services=None, seed=None):
+def random_services(min_services=3, max_services=8, exclude_services=None, seed=None) -> list:
     """
     Selects random services from TOP20_SERVICES, excluding those in exclude_services.
     """
@@ -296,7 +296,10 @@ def build_instances(args, vm_subnet_prefix: int = 24, exclude_services=None):
                 if net_s:
                     global_used_subnets.add(net_s)
                     global_used_ips.add(ip)
+
                 distro = "20.04"
+                services = ["vnet_manager"]
+
             else:
                 # pick between 22.04 and 24.04 (preserve relative weights)
                 distro = random.choices(["22.04", "24.04"], weights=[0.45, 0.3])[0]
@@ -309,7 +312,7 @@ def build_instances(args, vm_subnet_prefix: int = 24, exclude_services=None):
                 "name": name,
                 "hypervisor": hv,
                 "distro": distro,
-                "is_vm": is_vnetmgr,
+                "is_vnetmgr": is_vnetmgr,
                 "ip": all_ips,
                 "ssh_user": "root",
                 "ssh_pubkey": args.ssh_pubkey,
@@ -326,7 +329,7 @@ def build_instances(args, vm_subnet_prefix: int = 24, exclude_services=None):
 
     try:
         for inst in instances:
-            if inst.get("is_vm"):
+            if inst.get("is_vnetmgr"):
                 try:
                     primary_ip = inst['ip'][0]  # Use first IP from the list
                     net = ipaddress.ip_network(f"{primary_ip}/{vm_subnet_prefix}", strict=False)
@@ -362,7 +365,7 @@ def write_outputs(instances):
 
     groups = {"vms_20": [], "containers": []}
     for inst in instances:
-        if inst["is_vm"]:
+        if inst["is_vnetmgr"]:
             groups["vms_20"].append(inst)
         else:
             groups["containers"].append(inst)

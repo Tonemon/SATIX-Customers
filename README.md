@@ -13,7 +13,7 @@ This repository scaffolds a university-level simulation of an Internet Exchange 
 
 ## Features
 
-This project (will) contain the following features:
+The following features are on the roadmap:
 - [x] Generating the Proxmox Container / VM network layout configuration using one command.
 - [ ] Deployment of these Containers and VMs directly to the hypervisors via Terraform.
 - [ ] Configuring various services on these Containers and VMs using Ansible.

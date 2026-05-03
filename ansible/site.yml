@@ -1,0 +1,14 @@
+- hosts: all
+  gather_facts: yes
+  roles:
+    - common
+
+- hosts: containers
+  become: yes
+  roles:
+    - services
+
+- hosts: vms_20
+  become: yes
+  roles:
+    - vnet_manager

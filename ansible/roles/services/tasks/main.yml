@@ -1,0 +1,11 @@
+- name: Read host services list
+  set_fact:
+    svc_list: "{{ hostvars[inventory_hostname].services | default([]) }}"
+
+- name: Install selected services
+  apt:
+    name: "{{ item }}"
+    state: present
+    update_cache: no
+  loop: "{{ svc_list }}"
+  ignore_errors: yes

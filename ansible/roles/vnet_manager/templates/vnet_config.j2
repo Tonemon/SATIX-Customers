@@ -1,0 +1,5 @@
+# Generated vnet-manager config snippet
+networks:
+  - name: generated-net
+    subnet: {{ hostvars[inventory_hostname].vm_subnet | default('192.168.100.0/24') }}
+    gateway: {{ hostvars[inventory_hostname].vm_subnet | default('192.168.100.0/24') }}

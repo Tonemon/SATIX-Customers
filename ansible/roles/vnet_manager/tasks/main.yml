@@ -1,0 +1,23 @@
+- name: Ensure git and pip are present
+  apt:
+    name: ["git","python3-pip"]
+    state: present
+
+- name: Clone vnet-manager repository
+  git:
+    repo: "https://github.com/Erik-Lamers1/vnet-manager.git"
+    dest: /opt/vnet-manager
+    update: yes
+
+- name: Install Python requirements
+  pip:
+    requirements: /opt/vnet-manager/requirements.txt
+    executable: pip3
+  ignore_errors: yes
+
+- name: Copy vnet-manager config
+  template:
+    src: vnet_config.j2
+    dest: /opt/vnet-manager/config/generated_config.yaml
+    owner: root
+    mode: '0644'
